@@ -1,0 +1,263 @@
+<div id="lk-audio-container" style="display: none;"></div>
+<div id="status" class="status-box connecting">
+  <div class="spinner"></div>Connecting...
+</div>
+
+<!-- transcript container (used by Streamlit) -->
+<div id="transcript" style="display: none;">
+  <div id="transcriptContent"></div>
+</div>
+
+<!-- Text input (hidden when Streamlit handles it) -->
+<div id="textInputContainer" style="display: none; margin-top: 15px;">
+  <div style="display: flex; gap: 10px;">
+    <input type="text" id="textInput" placeholder="Type a message..."
+      style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 5px;" />
+    <button id="sendButton"
+      style="padding: 8px 20px; background-color: #0066cc; color: white; border: none; border-radius: 5px; cursor: pointer;">
+      Send
+    </button>
+  </div>
+</div>
+
+<!-- 🧩 Main LiveKit logic -->
+<script>
+console.log("LiveKit Component: Starting initialization...");
+
+// Streamlit will replace this dynamically
+const SHOW_VISIBLE_TRANSCRIPT = /*STREAMLIT_FLAG*/ true;
+
+let globalRoom = null; // store globally for parent calls
+
+function initializeLiveKit() {
+  try {
+    console.log(" initializeLiveKit() called. Checking LiveKit availability...");
+    const LiveKit =
+      window.LivekitClient || window.LiveKit || window.livekit || window.LiveKitClient;
+
+    if (!LiveKit) {
+      console.error(" LiveKit library not loaded yet!");
+      return;
+    }
+
+    const { Room, RoomEvent, Track, AudioPresets } = LiveKit;
+    console.log(" LiveKit components loaded.");
+
+    const room = new Room({
+      audioOutput: { deviceId: "default" },
+      publishDefaults: { audioPreset: AudioPresets.speech },
+    });
+
+    // make it globally available for sendTextMessageToLiveKit()
+    window.globalRoom = room;
+
+    // Also expose to parent window for cross-iframe access
+    if (window.parent && window.parent !== window) {
+      window.parent.globalRoom = room;
+    }
+
+    const url = "LIVEKIT_URL_PLACEHOLDER";
+    const token = "LIVEKIT_TOKEN_PLACEHOLDER";
+    let localMicTrack = null;
+
+    console.log(" Connecting to:", url);
+
+    const statusEl = document.getElementById("status");
+    const transcriptEl = document.getElementById("transcript");
+    const transcriptContent = document.getElementById("transcriptContent");
+    const textInputContainer = document.getElementById("textInputContainer");
+    const textInput = document.getElementById("textInput");
+    const sendButton = document.getElementById("sendButton");
+
+    function updateStatus(message, type = "connecting") {
+      statusEl.className = `status-box ${type}`;
+      statusEl.innerHTML =
+        type === "connecting" ? `<div class="spinner"></div>${message}` : message;
+    }
+
+    // ===== TRANSCRIPT FUNCTIONS =====
+    function updateLiveTranscript(speaker, text) {
+      let liveElem = document.getElementById("live-" + speaker);
+      if (!liveElem) {
+        liveElem = document.createElement("div");
+        liveElem.id = "live-" + speaker;
+        liveElem.className = "transcript-item " + speaker + " live";
+        liveElem.innerHTML = `
+          <div class="speaker ${speaker}">${speaker === "user" ? "You" : "AI"}</div>
+          <div class="live-text"></div>`;
+        transcriptContent.appendChild(liveElem);
+      }
+      liveElem.querySelector(".live-text").innerText = text;
+      transcriptContent.scrollTop = transcriptContent.scrollHeight;
+    }
+
+    function finalizeTranscript(speaker, text) {
+      const liveElem = document.getElementById("live-" + speaker);
+      if (liveElem) liveElem.remove();
+
+      const item = document.createElement("div");
+      item.className = "transcript-item " + speaker;
+      item.innerHTML = `
+        <div class="speaker ${speaker}">${speaker === "user" ? "You" : "AI"}</div>
+        <div>${text}</div>`;
+      transcriptContent.appendChild(item);
+      transcriptContent.scrollTop = transcriptContent.scrollHeight;
+    }
+
+    // ===== ROOM EVENTS =====
+    room
+      .on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+        console.log(" Track subscribed:", track.kind, participant.identity);
+        if (track.kind === Track.Kind.Audio) {
+          const audioEl = track.attach();
+          audioEl.autoplay = true;
+          document.body.appendChild(audioEl);
+          console.log(" AI audio attached.");
+        }
+      })
+      .on(RoomEvent.DataReceived, (payload) => {
+        try {
+          const message = JSON.parse(new TextDecoder("utf-8").decode(payload));
+          switch (message.type) {
+            case "partial_user":
+              updateLiveTranscript("user", message.text);
+              break;
+            case "partial_ai":
+              updateLiveTranscript("ai", message.text);
+              break;
+            case "user_transcript":
+              finalizeTranscript("user", message.text);
+              break;
+            case "ai_transcript":
+              finalizeTranscript("ai", message.text);
+              break;
+            default:
+              console.log(" Unknown message:", message);
+          }
+        } catch (err) {
+          console.error("Failed to parse data:", err);
+        }
+      })
+      .on(RoomEvent.Connected, () => {
+        console.log(" Connected to LiveKit room.");
+        updateStatus('Connected! Listening... <span class="listening-indicator"></span>', "connected");
+        if (SHOW_VISIBLE_TRANSCRIPT) {
+          transcriptEl.style.display = "block";
+          textInputContainer.style.display = "block";
+        }
+      })
+      .on(RoomEvent.Disconnected, () => {
+        console.warn(" Disconnected from room.");
+        updateStatus("Disconnected", "error");
+      });
+
+    // ===== CONNECT & ENABLE MICROPHONE =====
+    setTimeout(async () => {
+      try {
+        console.log(" Attempting connection...");
+        await room.connect(url, token, { autoSubscribe: true, dynacast: true });
+        console.log(" Room connected:", room.state);
+        await room.localParticipant.setMicrophoneEnabled(true);
+        console.log("️ Microphone enabled.");
+      } catch (error) {
+        console.error(" Connection failed:", error);
+        updateStatus(`Connection Failed: ${error.message}`, "error");
+      }
+    }, 1000);
+
+    // Disconnect on tab close
+    window.addEventListener("beforeunload", () => {
+      if (room.state === "connected") room.disconnect();
+    });
+  } catch (err) {
+    console.error(" initializeLiveKit() failed:", err);
+  }
+}
+
+// Safe fallback if script loads before Streamlit replaces placeholders
+window.addEventListener("load", () => {
+  console.log("🕒 Window loaded - initializing LiveKit");
+  initializeLiveKit();
+});
+
+window.sendTextMessageToLiveKit = function (message) {
+  const room = window.globalRoom;
+  if (!room || room.state !== "connected") {
+    console.warn("⚠ Room not ready or disconnected.");
+    return false;
+  }
+
+  const payload = JSON.stringify({
+    type: "user_text_message",
+    text: message,
+    timestamp: Date.now(),
+  });
+
+  room.localParticipant
+    .publishData(new TextEncoder().encode(payload), { reliable: true })
+    .then(() => console.log(" Message sent:", message))
+    .catch((err) => console.error(" Failed to send:", err));
+
+  return true;
+};
+
+// Also expose to parent window for cross-iframe access
+if (window.parent && window.parent !== window) {
+  window.parent.sendTextMessageToLiveKit = window.sendTextMessageToLiveKit;
+}
+</script>
+
+<!-- Load LiveKit SDK LAST -->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.0.7/dist/livekit-client.umd.min.js"></script>
+
+<!-- ===== STYLE ===== -->
+<style>
+.status-box {
+  padding: 10px;
+  margin-bottom: 15px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+}
+.connecting { background-color: #f0f0f0; color: #333; }
+.connected { background-color: #d4edda; color: #155724; }
+.error { background-color: #f8d7da; color: #721c24; }
+.spinner {
+  border: 3px solid rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  border-top: 3px solid #3498db;
+  width: 16px; height: 16px;
+  animation: spin 1s linear infinite;
+  margin-right: 10px;
+}
+@keyframes spin { 0%{transform:rotate(0deg);}100%{transform:rotate(360deg);} }
+.listening-indicator {
+  display: inline-block;
+  width: 10px; height: 10px;
+  background-color: #28a745;
+  border-radius: 50%;
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse { 0%{opacity:1;}50%{opacity:0.4;}100%{opacity:1;} }
+#transcript {
+  margin-top: 15px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 10px;
+  background-color: #fafafa;
+}
+.transcript-item { margin-bottom: 10px; padding: 8px; border-radius: 5px; }
+.transcript-item.user {
+  background-color: #e6f7ff;
+  border-left: 3px solid #0066cc;
+}
+.transcript-item.ai {
+  background-color: #f0f0f0;
+  border-left: 3px solid #666;
+}
+.speaker { font-weight: bold; margin-bottom: 3px; font-size: 0.9em; }
+.speaker.user { color: #0066cc; }
+.speaker.ai { color: #666; }
+</style>
