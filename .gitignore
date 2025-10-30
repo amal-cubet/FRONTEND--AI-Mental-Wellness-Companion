@@ -1,0 +1,28 @@
+# --- Virtual Environment ---
+# Ignore the virtual environment directory
+.venv/
+venv/
+env/
+
+# --- Environment Variables ---
+# Ignore environment variable files
+.env
+.env.*
+
+# --- Python Cache ---
+# Ignore Python cache files and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- IDE Files (PyCharm) ---
+# Ignore PyCharm project settings
+.idea/
+
+# --- OS-specific Files ---
+# Ignore macOS files
+.DS_Store
+
+# Ignore Windows files
+Thumbs.db
