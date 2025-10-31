@@ -1,73 +1,53 @@
+<!-- livekit_component_utf8.html - FINAL FIX FOR SPACES -->
 <div id="lk-audio-container" style="display: none;"></div>
 <div id="status" class="status-box connecting">
   <div class="spinner"></div>Connecting...
 </div>
 
-<!-- transcript container (used by Streamlit) -->
-<div id="transcript" style="display: none;">
-  <div id="transcriptContent"></div>
+<!-- transcript container (HIDDEN - displayed in Streamlit) -->
+<div id="transcript" style="display: none; overflow-x: hidden !important; overflow-y: auto !important; width: 100%; max-width: 100%;">
+  <div id="transcriptContent" style="overflow-x: hidden !important; width: 100%; max-width: 100%;"></div>
 </div>
 
-<!-- Text input (hidden when Streamlit handles it) -->
-<div id="textInputContainer" style="display: none; margin-top: 15px;">
-  <div style="display: flex; gap: 10px;">
-    <input type="text" id="textInput" placeholder="Type a message..."
-      style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 5px;" />
-    <button id="sendButton"
-      style="padding: 8px 20px; background-color: #0066cc; color: white; border: none; border-radius: 5px; cursor: pointer;">
-      Send
-    </button>
-  </div>
-</div>
 
-<!-- 🧩 Main LiveKit logic -->
 <script>
 console.log("LiveKit Component: Starting initialization...");
 
-// Streamlit will replace this dynamically
-const SHOW_VISIBLE_TRANSCRIPT = /*STREAMLIT_FLAG*/ true;
-
-let globalRoom = null; // store globally for parent calls
+const SHOW_VISIBLE_TRANSCRIPT = false;
+let globalRoom = null;
 
 function initializeLiveKit() {
   try {
-    console.log(" initializeLiveKit() called. Checking LiveKit availability...");
+    console.log("✅ initializeLiveKit() called. Checking LiveKit availability...");
     const LiveKit =
       window.LivekitClient || window.LiveKit || window.livekit || window.LiveKitClient;
 
     if (!LiveKit) {
-      console.error(" LiveKit library not loaded yet!");
+      console.error("❌ LiveKit library not loaded yet!");
       return;
     }
 
     const { Room, RoomEvent, Track, AudioPresets } = LiveKit;
-    console.log(" LiveKit components loaded.");
+    console.log("📦 LiveKit components loaded.");
 
     const room = new Room({
       audioOutput: { deviceId: "default" },
       publishDefaults: { audioPreset: AudioPresets.speech },
     });
 
-    // make it globally available for sendTextMessageToLiveKit()
     window.globalRoom = room;
 
-    // Also expose to parent window for cross-iframe access
     if (window.parent && window.parent !== window) {
       window.parent.globalRoom = room;
     }
 
     const url = "LIVEKIT_URL_PLACEHOLDER";
     const token = "LIVEKIT_TOKEN_PLACEHOLDER";
-    let localMicTrack = null;
 
-    console.log(" Connecting to:", url);
+    console.log("🔗 Connecting to:", url);
 
     const statusEl = document.getElementById("status");
-    const transcriptEl = document.getElementById("transcript");
     const transcriptContent = document.getElementById("transcriptContent");
-    const textInputContainer = document.getElementById("textInputContainer");
-    const textInput = document.getElementById("textInput");
-    const sendButton = document.getElementById("sendButton");
 
     function updateStatus(message, type = "connecting") {
       statusEl.className = `status-box ${type}`;
@@ -75,7 +55,136 @@ function initializeLiveKit() {
         type === "connecting" ? `<div class="spinner"></div>${message}` : message;
     }
 
-    // ===== TRANSCRIPT FUNCTIONS =====
+    // ===== STREAMING TRANSCRIPT FUNCTIONS WITH SPACE FIX =====
+
+    let currentStreamingId = null;
+    let currentStreamingSpeaker = null;
+
+    function createNewStreamingElement(speaker) {
+      // Finalize any existing streaming element before creating a new one
+      if (currentStreamingId) {
+        const oldElem = document.getElementById(currentStreamingId);
+        if (oldElem && !oldElem.dataset.finalized) {
+          console.log("🔒 Auto-finalizing old streaming element:", currentStreamingId);
+          const indicator = oldElem.querySelector(".typing-indicator");
+          if (indicator) indicator.remove();
+          oldElem.classList.remove("streaming");
+          oldElem.dataset.finalized = "true";
+        }
+      }
+
+      const timestamp = Date.now();
+      const elem = document.createElement("div");
+      elem.id = "streaming-" + speaker + "-" + timestamp;
+      elem.className = "transcript-item " + speaker + " streaming";
+      elem.dataset.timestamp = timestamp;
+      elem.dataset.speaker = speaker;
+      elem.innerHTML = `
+        <div class="speaker ${speaker}">${speaker === "user" ? "You" : "AI"} <span class="typing-indicator">▋</span></div>
+        <div class="streaming-text"></div>`;
+      transcriptContent.appendChild(elem);
+      elem.offsetHeight;
+
+      currentStreamingId = elem.id;
+      currentStreamingSpeaker = speaker;
+      tokenCounter = 0; // Reset token counter for new message
+      console.log("✅ Created new streaming element:", elem.id, "for speaker:", speaker, "(token counter reset)");
+      return elem;
+    }
+
+    function getCurrentStreamingElement(speaker) {
+      // If speaker changed OR no current element OR current is finalized, create new
+      if (!currentStreamingId || currentStreamingSpeaker !== speaker) {
+        console.log("🆕 Speaker changed or no current element, creating new for:", speaker);
+        return createNewStreamingElement(speaker);
+      }
+
+      const elem = document.getElementById(currentStreamingId);
+      if (elem && !elem.dataset.finalized) {
+        return elem;
+      }
+
+      console.log("🆕 Current element finalized, creating new for:", speaker);
+      return createNewStreamingElement(speaker);
+    }
+
+    let tokenQueue = [];
+    let isProcessingToken = false;
+
+    let tokenCounter = 0;
+
+    function updateStreamingText(speaker, token) {
+      tokenCounter++;
+      console.log(`🔷 [Token #${tokenCounter}] Frontend received token for ${speaker}: '${token}' (len=${token.length})`);
+      tokenQueue.push({ speaker, token, tokenNum: tokenCounter });
+
+      if (!isProcessingToken) {
+        processNextToken();
+      }
+    }
+
+    function processNextToken() {
+      if (tokenQueue.length === 0) {
+        isProcessingToken = false;
+        return;
+      }
+
+      isProcessingToken = true;
+      const { speaker, token, tokenNum } = tokenQueue.shift();
+
+      const elem = getCurrentStreamingElement(speaker);
+      const textContainer = elem.querySelector(".streaming-text");
+
+      if (!textContainer) {
+        console.error("❌ Text container not found in element:", elem.id);
+        processNextToken();
+        return;
+      }
+
+      // ✅ CRITICAL FIX: Use textContent to preserve spaces
+      // Create a text node instead of setting innerHTML
+      const textNode = document.createTextNode(token);
+      const tokenSpan = document.createElement("span");
+      tokenSpan.className = "token new-token";
+      tokenSpan.appendChild(textNode); // Use appendChild instead of textContent
+      textContainer.appendChild(tokenSpan);
+
+      elem.style.display = "block";
+      transcriptContent.scrollTop = transcriptContent.scrollHeight;
+
+      console.log(`✅ [Token #${tokenNum}] Displayed token for ${speaker}: '${token}'`);
+
+      setTimeout(() => {
+        tokenSpan.className = "token";
+        processNextToken();
+      }, 50);
+    }
+
+    function finalizeStreamingTranscript(speaker) {
+      if (!currentStreamingId) {
+        console.log("⚠️ No streaming element to finalize");
+        return;
+      }
+
+      const streamElem = document.getElementById(currentStreamingId);
+      if (streamElem && !streamElem.dataset.finalized) {
+        console.log("🔒 Finalizing streaming element:", currentStreamingId, "for speaker:", speaker);
+
+        const indicator = streamElem.querySelector(".typing-indicator");
+        if (indicator) indicator.remove();
+
+        streamElem.classList.remove("streaming");
+        streamElem.dataset.finalized = "true";
+
+        // Clear current streaming state
+        currentStreamingId = null;
+        currentStreamingSpeaker = null;
+        console.log("✅ Streaming element finalized and state cleared");
+      }
+
+      transcriptContent.scrollTop = transcriptContent.scrollHeight;
+    }
+
     function updateLiveTranscript(speaker, text) {
       let liveElem = document.getElementById("live-" + speaker);
       if (!liveElem) {
@@ -93,97 +202,133 @@ function initializeLiveKit() {
 
     function finalizeTranscript(speaker, text) {
       const liveElem = document.getElementById("live-" + speaker);
-      if (liveElem) liveElem.remove();
 
-      const item = document.createElement("div");
-      item.className = "transcript-item " + speaker;
-      item.innerHTML = `
-        <div class="speaker ${speaker}">${speaker === "user" ? "You" : "AI"}</div>
-        <div>${text}</div>`;
-      transcriptContent.appendChild(item);
+      if (liveElem) {
+        // Convert live element to final element (no flicker)
+        liveElem.classList.remove("live");
+        liveElem.id = ""; // Remove live ID
+        liveElem.querySelector(".live-text").innerText = text;
+        console.log(`✅ Finalized ${speaker} transcript (converted live to final)`);
+      } else {
+        // Create new final element if no live element exists
+        const item = document.createElement("div");
+        item.className = "transcript-item " + speaker;
+        item.innerHTML = `
+          <div class="speaker ${speaker}">${speaker === "user" ? "You" : "AI"}</div>
+          <div>${text}</div>`;
+        transcriptContent.appendChild(item);
+        console.log(`✅ Created new final ${speaker} transcript element`);
+      }
+
       transcriptContent.scrollTop = transcriptContent.scrollHeight;
     }
 
     // ===== ROOM EVENTS =====
     room
       .on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-        console.log(" Track subscribed:", track.kind, participant.identity);
+        console.log("🎧 Track subscribed:", track.kind, participant.identity);
         if (track.kind === Track.Kind.Audio) {
           const audioEl = track.attach();
           audioEl.autoplay = true;
           document.body.appendChild(audioEl);
-          console.log(" AI audio attached.");
+          console.log("🔊 AI audio attached.");
         }
       })
       .on(RoomEvent.DataReceived, (payload) => {
         try {
           const message = JSON.parse(new TextDecoder("utf-8").decode(payload));
+          console.log("📦 Received data:", message.type);
+
+          if (message.type === "ai_stream") {
+            updateStreamingText("ai", message.token);
+            return;
+          }
+
           switch (message.type) {
             case "partial_user":
+              console.log("👤 Partial user:", message.text);
               updateLiveTranscript("user", message.text);
               break;
+
             case "partial_ai":
+              console.log("🤖 Partial AI:", message.text);
               updateLiveTranscript("ai", message.text);
               break;
+
             case "user_transcript":
+              console.log("👤 Final user transcript:", message.text);
+
+              // CRITICAL: Finalize any active AI streaming before showing user message
+              if (currentStreamingId && currentStreamingSpeaker === "ai") {
+                console.log("🔒 Auto-finalizing AI stream before user message");
+                finalizeStreamingTranscript("ai");
+              }
+
               finalizeTranscript("user", message.text);
               break;
+
             case "ai_transcript":
-              finalizeTranscript("ai", message.text);
+              console.log("🤖 Final AI transcript:", message.text);
+              console.log(`⏳ Token queue length at finalization: ${tokenQueue.length}`);
+
+              // Wait a bit if there are still tokens in queue
+              if (tokenQueue.length > 0) {
+                console.warn(`⚠️ ${tokenQueue.length} tokens still in queue! Waiting before finalization...`);
+                setTimeout(() => {
+                  console.log("✅ Delayed finalization after queue processed");
+                  finalizeStreamingTranscript("ai");
+                }, 500);
+              } else {
+                finalizeStreamingTranscript("ai");
+              }
               break;
+
             default:
-              console.log(" Unknown message:", message);
+              console.log("📄 Unknown message:", message);
           }
         } catch (err) {
           console.error("Failed to parse data:", err);
         }
       })
       .on(RoomEvent.Connected, () => {
-        console.log(" Connected to LiveKit room.");
+        console.log("✅ Connected to LiveKit room.");
         updateStatus('Connected! Listening... <span class="listening-indicator"></span>', "connected");
-        if (SHOW_VISIBLE_TRANSCRIPT) {
-          transcriptEl.style.display = "block";
-          textInputContainer.style.display = "block";
-        }
       })
       .on(RoomEvent.Disconnected, () => {
-        console.warn(" Disconnected from room.");
+        console.warn("❌ Disconnected from room.");
         updateStatus("Disconnected", "error");
       });
 
-    // ===== CONNECT & ENABLE MICROPHONE =====
     setTimeout(async () => {
       try {
-        console.log(" Attempting connection...");
+        console.log("🚀 Attempting connection...");
         await room.connect(url, token, { autoSubscribe: true, dynacast: true });
-        console.log(" Room connected:", room.state);
+        console.log("✅ Room connected:", room.state);
         await room.localParticipant.setMicrophoneEnabled(true);
-        console.log("️ Microphone enabled.");
+        console.log("🎙️ Microphone enabled.");
       } catch (error) {
-        console.error(" Connection failed:", error);
+        console.error("❌ Connection failed:", error);
         updateStatus(`Connection Failed: ${error.message}`, "error");
       }
     }, 1000);
 
-    // Disconnect on tab close
     window.addEventListener("beforeunload", () => {
       if (room.state === "connected") room.disconnect();
     });
   } catch (err) {
-    console.error(" initializeLiveKit() failed:", err);
+    console.error("🔥 initializeLiveKit() failed:", err);
   }
 }
 
-// Safe fallback if script loads before Streamlit replaces placeholders
 window.addEventListener("load", () => {
-  console.log("🕒 Window loaded - initializing LiveKit");
+  console.log("🕐 Window loaded - initializing LiveKit");
   initializeLiveKit();
 });
 
 window.sendTextMessageToLiveKit = function (message) {
   const room = window.globalRoom;
   if (!room || room.state !== "connected") {
-    console.warn("⚠ Room not ready or disconnected.");
+    console.warn("⚠️ Room not ready or disconnected.");
     return false;
   }
 
@@ -195,13 +340,12 @@ window.sendTextMessageToLiveKit = function (message) {
 
   room.localParticipant
     .publishData(new TextEncoder().encode(payload), { reliable: true })
-    .then(() => console.log(" Message sent:", message))
-    .catch((err) => console.error(" Failed to send:", err));
+    .then(() => console.log("✅ Message sent:", message))
+    .catch((err) => console.error("❌ Failed to send:", err));
 
   return true;
 };
 
-// Also expose to parent window for cross-iframe access
 if (window.parent && window.parent !== window) {
   window.parent.sendTextMessageToLiveKit = window.sendTextMessageToLiveKit;
 }
@@ -210,8 +354,9 @@ if (window.parent && window.parent !== window) {
 <!-- Load LiveKit SDK LAST -->
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.0.7/dist/livekit-client.umd.min.js"></script>
 
-<!-- ===== STYLE ===== -->
+<!-- ===== STYLE WITH SPACE PRESERVATION ===== -->
 <style>
+/* ===== STATUS & INDICATORS ===== */
 .status-box {
   padding: 10px;
   margin-bottom: 15px;
@@ -222,6 +367,7 @@ if (window.parent && window.parent !== window) {
 .connecting { background-color: #f0f0f0; color: #333; }
 .connected { background-color: #d4edda; color: #155724; }
 .error { background-color: #f8d7da; color: #721c24; }
+
 .spinner {
   border: 3px solid rgba(0, 0, 0, 0.1);
   border-radius: 50%;
@@ -230,7 +376,8 @@ if (window.parent && window.parent !== window) {
   animation: spin 1s linear infinite;
   margin-right: 10px;
 }
-@keyframes spin { 0%{transform:rotate(0deg);}100%{transform:rotate(360deg);} }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
 .listening-indicator {
   display: inline-block;
   width: 10px; height: 10px;
@@ -238,26 +385,169 @@ if (window.parent && window.parent !== window) {
   border-radius: 50%;
   animation: pulse 1.5s infinite;
 }
-@keyframes pulse { 0%{opacity:1;}50%{opacity:0.4;}100%{opacity:1;} }
-#transcript {
-  margin-top: 15px;
-  border: 1px solid #ddd;
-  border-radius: 5px;
-  max-height: 300px;
-  overflow-y: auto;
-  padding: 10px;
-  background-color: #fafafa;
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+
+.typing-indicator {
+  color: #0066cc;
+  animation: blink 1s infinite;
 }
-.transcript-item { margin-bottom: 10px; padding: 8px; border-radius: 5px; }
-.transcript-item.user {
-  background-color: #e6f7ff;
-  border-left: 3px solid #0066cc;
+@keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+
+/* ===== CHAT CONTAINER ===== */
+#transcriptContent {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;     /* start from top */
+  align-items: stretch;            /* full width alignment */
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  height: 100%;
+  max-height: 450px;
+  width: 100%;
+  min-width: 0;                    /* prevent flex item from growing beyond container */
+  padding: 10px 16px;
+  box-sizing: border-box;
+  scroll-behavior: smooth;
+  background-color: #fff;
+  border-radius: 10px;
 }
+
+#transcriptContent::-webkit-scrollbar {
+  width: 8px;
+}
+#transcriptContent::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+#transcriptContent::-webkit-scrollbar-thumb {
+  background: rgba(120,120,120,0.6);
+  border-radius: 4px;
+}
+#transcriptContent::-webkit-scrollbar-thumb:hover {
+  background: rgba(120,120,120,0.8);
+}
+
+/* ===== CHAT BUBBLES ===== */
+.transcript-item {
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  max-width: 80%;
+  min-width: 0;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.5;
+  box-sizing: border-box;
+  flex-shrink: 1;
+}
+
 .transcript-item.ai {
-  background-color: #f0f0f0;
-  border-left: 3px solid #666;
+  align-self: flex-start;
+  background-color: #f1f1f1;
+  border-left: 4px solid #666;
+  color: #333;
+  border-radius: 12px 12px 12px 0;
+  margin-right: auto;
+  margin-left: 0;
+  width: fit-content;
 }
-.speaker { font-weight: bold; margin-bottom: 3px; font-size: 0.9em; }
-.speaker.user { color: #0066cc; }
-.speaker.ai { color: #666; }
+
+.transcript-item.user {
+  align-self: flex-end;
+  background-color: #d6ecff;
+  border-left: 4px solid #007bff;
+  color: #111;
+  border-radius: 12px 12px 0 12px;
+  margin-left: auto;
+  margin-right: 0;
+  width: fit-content;
+}
+
+/* ===== SPEAKER LABELS ===== */
+.speaker {
+  font-weight: 700;
+  font-size: 0.8em;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+}
+.speaker.ai {
+  color: #666;
+}
+.speaker.user {
+  color: #007bff;
+  text-align: right;
+}
+
+/* ===== STREAMING TEXT ===== */
+.streaming-text {
+  font-family: 'Courier New', Courier, monospace;
+  line-height: 1.6;
+  padding: 4px;
+  border-radius: 3px;
+  background-color: rgba(0, 102, 204, 0.05);
+  white-space: pre-wrap !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.streaming-text .token {
+  display: inline !important;
+  color: #0066cc;
+  font-weight: 600;
+  font-size: 1.05em;
+  letter-spacing: 0.02em;
+  white-space: pre-wrap !important;
+}
+
+.streaming-text .new-token {
+  display: inline !important;
+  color: #0044cc;
+  font-weight: 700;
+  background-color: rgba(0, 102, 255, 0.15);
+  border-radius: 2px;
+  animation: pop-in 0.2s ease-out;
+}
+
+/* POP-IN EFFECT */
+@keyframes pop-in {
+  0% { transform: scale(0.8); opacity: 0; }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* ===== LAYOUT SAFEGUARDS ===== */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden !important;
+  overflow-y: auto;
+}
+
+/* Prevent horizontal overflow on main containers */
+#transcript, .transcript-container {
+  overflow-x: hidden !important;
+  width: 100%;
+}
+
+/* Proper wrapping for transcript content */
+#transcriptContent > * {
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+}
 </style>
+
+<script>
+const transcript = document.getElementById('transcriptContent');
+if (transcript) {
+  const observer = new MutationObserver(() => {
+    transcript.scrollTop = transcript.scrollHeight;
+  });
+  observer.observe(transcript, { childList: true, subtree: true });
+}
+</script>

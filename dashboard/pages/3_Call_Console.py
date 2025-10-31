@@ -116,95 +116,333 @@ with col_transcript:
     else:
         st.success("✅ **Live Transcript** - Conversation appears below")
 
-    # Display the LiveKit transcript component (synced from the HTML component)
+    # Display the transcript component with proper height
     transcript_display = """
-    <div id="streamlit-transcript-mirror" style="
-        height: 400px;
-        overflow-y: auto;
-        border: 1px solid #ddd;
-        border-radius: 10px;
-        padding: 15px;
-        background-color: #fafafa;
-        font-family: sans-serif;
-    ">
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow-x: hidden !important;
+            overflow-y: hidden !important;
+            max-width: 100vw !important;
+        }
+
+        #streamlit-transcript-mirror {
+            width: 100%;
+            height: 100%;
+            overflow-x: hidden;
+            overflow-y: auto;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 20px;
+            background: linear-gradient(to bottom, #fafafa 0%, #f5f5f5 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            box-sizing: border-box;
+        }
+
+        #transcript-mirror-content {
+            min-height: 100%;
+            width: 100%;
+        }
+
+        /* Custom scrollbar */
+        #streamlit-transcript-mirror::-webkit-scrollbar {
+            width: 12px;
+        }
+
+        #streamlit-transcript-mirror::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+
+        #streamlit-transcript-mirror::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+            border: 2px solid #f1f1f1;
+        }
+
+        #streamlit-transcript-mirror::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Transcript items */
+        .transcript-item {
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .transcript-item.user {
+            background-color: #e3f2fd;
+            border-left: 4px solid #2196F3;
+            margin-right: 40px;
+        }
+
+        .transcript-item.ai {
+            background-color: #f5f5f5;
+            border-left: 4px solid #757575;
+            margin-left: 40px;
+        }
+
+        .transcript-item.streaming {
+            background: linear-gradient(90deg, #e8f4ff 0%, #d1e7ff 100%);
+            border-left: 4px solid #0088ff;
+            box-shadow: 0 2px 6px rgba(0, 136, 255, 0.2);
+            animation: pulseGlow 2s ease-in-out infinite;
+        }
+
+        @keyframes pulseGlow {
+            0%, 100% { box-shadow: 0 2px 6px rgba(0, 136, 255, 0.2); }
+            50% { box-shadow: 0 4px 12px rgba(0, 136, 255, 0.4); }
+        }
+
+        .speaker {
+            font-weight: 700;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .speaker.user { color: #1976D2; }
+        .speaker.user::before { content: "👤"; font-size: 1.2em; }
+        .speaker.ai { color: #616161; }
+        .speaker.ai::before { content: "🤖"; font-size: 1.2em; }
+
+        .typing-indicator {
+            color: #0088ff;
+            font-weight: bold;
+            animation: blink 1s infinite;
+            margin-left: 4px;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        /* SPACE PRESERVATION WITH PROPER WRAPPING */
+        .streaming-text {
+            font-family: 'Courier New', Monaco, Consolas, monospace;
+            line-height: 1.6;
+            font-size: 0.95em;
+            padding: 6px;
+            border-radius: 4px;
+            background-color: rgba(0, 102, 204, 0.03);
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            white-space: pre-wrap !important;
+        }
+
+        .streaming-text .token {
+            color: #1565C0;
+            font-weight: 500;
+            white-space: pre-wrap !important;
+            display: inline !important;
+        }
+
+        .streaming-text .new-token {
+            color: #0D47A1;
+            font-weight: 700;
+            background-color: rgba(33, 150, 243, 0.15);
+            padding: 2px 4px;
+            border-radius: 3px;
+            animation: popIn 0.3s ease-out;
+        }
+
+        @keyframes popIn {
+            0% { transform: scale(0.7); opacity: 0; }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .transcript-item > div:last-child {
+            color: #212121;
+            line-height: 1.5;
+            font-size: 0.95em;
+            white-space: pre-wrap !important;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        .transcript-empty {
+            color: #999;
+            text-align: center;
+            padding: 40px 20px;
+            font-style: italic;
+        }
+
+        .transcript-empty::before {
+            content: "💬";
+            display: block;
+            font-size: 3em;
+            margin-bottom: 10px;
+            opacity: 0.3;
+        }
+
+        /* PROPER TEXT WRAPPING FOR ALL ELEMENTS */
+        .transcript-item, .transcript-item * {
+            word-wrap: break-word !important;
+            overflow-wrap: break-word !important;
+        }
+    </style>
+
+    <div id="streamlit-transcript-mirror">
         <div id="transcript-mirror-content">
-            <p style="color: #999; text-align: center; padding: 20px;">Transcript will appear here once the call is connected...</p>
+            <div class="transcript-empty">
+                Transcript will appear here once connected...
+            </div>
         </div>
     </div>
-    <script>
-        // Poll for transcript updates from the LiveKit component
-        setInterval(() => {
-            const livekitTranscript = parent.document.getElementById('transcriptContent');
-            const mirrorContent = document.getElementById('transcript-mirror-content');
 
-            if (livekitTranscript && mirrorContent) {
-                // Clone the transcript content
-                mirrorContent.innerHTML = livekitTranscript.innerHTML;
-                // Auto-scroll to bottom
-                const container = document.getElementById('streamlit-transcript-mirror');
-                if (container) container.scrollTop = container.scrollHeight;
+    <script>
+        let lastTranscriptHTML = '';
+
+        function updateTranscript() {
+            try {
+                let livekitTranscript = null;
+
+                // Try to find transcriptContent in parent
+                if (parent && parent.document) {
+                    livekitTranscript = parent.document.getElementById('transcriptContent');
+                }
+
+                // If not found in parent, search all iframes
+                if (!livekitTranscript) {
+                    const iframes = parent.document.getElementsByTagName('iframe');
+                    for (let i = 0; i < iframes.length; i++) {
+                        try {
+                            const doc = iframes[i].contentDocument || iframes[i].contentWindow.document;
+                            const content = doc.getElementById('transcriptContent');
+                            if (content) {  // Remove the children.length check to always find it
+                                livekitTranscript = content;
+                                break;
+                            }
+                        } catch (e) {
+                            // Cross-origin or other errors, skip
+                        }
+                    }
+                }
+
+                const mirrorContent = document.getElementById('transcript-mirror-content');
+
+                if (livekitTranscript && mirrorContent) {
+                    // Check if content has actually changed to avoid unnecessary updates
+                    const currentHTML = livekitTranscript.innerHTML;
+
+                    if (currentHTML !== lastTranscriptHTML) {
+                        lastTranscriptHTML = currentHTML;
+
+                        // Clear existing content
+                        mirrorContent.innerHTML = '';
+
+                        // Clone all child nodes deeply to preserve structure and text
+                        if (livekitTranscript.children.length > 0) {
+                            Array.from(livekitTranscript.children).forEach(child => {
+                                const clonedNode = child.cloneNode(true);
+                                mirrorContent.appendChild(clonedNode);
+                            });
+                        } else {
+                            // Show empty state if no messages
+                            mirrorContent.innerHTML = '<div class="transcript-empty">Waiting for conversation...</div>';
+                        }
+
+                        // Auto-scroll to bottom
+                        const container = document.getElementById('streamlit-transcript-mirror');
+                        if (container) {
+                            container.scrollTop = container.scrollHeight;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('Transcript update error:', e);
             }
-        }, 500); // Update every 500ms
+        }
+
+        function scheduleUpdate() {
+            updateTranscript();
+            requestAnimationFrame(scheduleUpdate);
+        }
+
+        requestAnimationFrame(scheduleUpdate);
     </script>
     """
-    components.html(transcript_display, height=420)
 
-    # --- Text input for sending messages ---
-    st.markdown("---")
-    st.markdown("### 💬 Send Text Message")
+    # Render with increased height (scrolling=False to prevent iframe scroll, content handles its own scroll)
+    components.html(transcript_display, height=500, scrolling=False)
 
-    # Initialize message counter for unique keys
-    if "message_counter" not in st.session_state:
-        st.session_state.message_counter = 0
+# --- Text input for sending messages ---
+st.markdown("---")
+st.markdown("### 💬 Send Text Message")
 
-    # Only show input if connected
-    if st.session_state.call_status == "Connected":
-        user_input = st.text_area(
-            "Type your message...",
-            key=f"message_input_{st.session_state.message_counter}",
-            height=70,
-            placeholder="Type a message to send to the AI..."
-        )
-        send_button = st.button("📤 Send Message", use_container_width=True)
+# Initialize message counter for unique keys
+if "message_counter" not in st.session_state:
+    st.session_state.message_counter = 0
 
-        if send_button and user_input.strip():
-            message_text = user_input.strip()
+# Only show input if connected
+if st.session_state.call_status == "Connected":
+    user_input = st.text_area(
+        "Type your message...",
+        key=f"message_input_{st.session_state.message_counter}",
+        height=70,
+        placeholder="Type a message to send to the AI..."
+    )
+    send_button = st.button("📤 Send Message", use_container_width=True)
 
-            # Send message via JavaScript to LiveKit data channel
-            send_js = f"""
-            <script>
-                (function() {{
-                    const message = {repr(message_text)};
-                    console.log('📤 Attempting to send message:', message);
+    if send_button and user_input.strip():
+        message_text = user_input.strip()
 
-                    // Wait a bit for the function to be available
-                    function attemptSend(retries = 5) {{
-                        if (typeof parent.sendTextMessageToLiveKit === 'function') {{
-                            try {{
-                                const success = parent.sendTextMessageToLiveKit(message);
-                                console.log('✅ Message sent successfully:', success);
-                            }} catch (error) {{
-                                console.error('❌ Error sending message:', error);
-                            }}
-                        }} else if (retries > 0) {{
-                            console.log('⏳ Function not ready, retrying... (' + retries + ' left)');
-                            setTimeout(() => attemptSend(retries - 1), 200);
-                        }} else {{
-                            console.error('❌ sendTextMessageToLiveKit function not found after retries');
+        # Send message via JavaScript to LiveKit data channel
+        send_js = f"""
+        <script>
+            (function() {{
+                const message = {repr(message_text)};
+                console.log('📤 Attempting to send message:', message);
+
+                // Wait a bit for the function to be available
+                function attemptSend(retries = 5) {{
+                    if (typeof parent.sendTextMessageToLiveKit === 'function') {{
+                        try {{
+                            const success = parent.sendTextMessageToLiveKit(message);
+                            console.log('✅ Message sent successfully:', success);
+                        }} catch (error) {{
+                            console.error('❌ Error sending message:', error);
                         }}
+                    }} else if (retries > 0) {{
+                        console.log('⏳ Function not ready, retrying... (' + retries + ' left)');
+                        setTimeout(() => attemptSend(retries - 1), 200);
+                    }} else {{
+                        console.error('❌ sendTextMessageToLiveKit function not found after retries');
                     }}
+                }}
 
-                    attemptSend();
-                }})();
-            </script>
-            """
-            components.html(send_js, height=0)
+                attemptSend();
+            }})();
+        </script>
+        """
+        components.html(send_js, height=0)
 
-            # Clear input
-            st.session_state.message_counter += 1
-            st.rerun()
-    else:
-        st.info("💡 Connect to the call to send text messages")
+        # Clear input
+        st.session_state.message_counter += 1
+        st.rerun()
+else:
+    st.info("💡 Connect to the call to send text messages")
 
 # --- CONTROLS PANEL (UNCHANGED) ---
 with col_controls:
