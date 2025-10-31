@@ -5,9 +5,9 @@ fastapi>=0.110.0
 uvicorn>=0.29.0
 
 langchain
-streamlit
 langchain-openai
 langgraph
 gTTS
 python-dotenv
 livekit
+openai
