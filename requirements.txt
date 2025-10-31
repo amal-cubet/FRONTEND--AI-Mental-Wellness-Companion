@@ -9,5 +9,4 @@ langchain-openai
 langgraph
 gTTS
 python-dotenv
-livekit
 openai
