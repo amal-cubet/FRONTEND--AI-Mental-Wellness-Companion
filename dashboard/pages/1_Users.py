@@ -178,7 +178,13 @@ else:
                         user_info = st.session_state['users_df'].iloc[idx].to_dict()
 
                         if selected_action == "📞 Start Call":
-                            st.session_state['user_for_call'] = user_info  # <-- This line is now fixed
+                            st.session_state['user_for_call'] = user_info
+                            print("🔍 USER OBJECT DEBUG:")
+                            print(f"   Full user object: {st.session_state['user_for_call']}")
+                            print(f"   Keys: {list(st.session_state['user_for_call'].keys())}")
+                            print(f"   'id' field: {st.session_state['user_for_call'].get('id')}")
+                            print(f"   '_id' field: {st.session_state['user_for_call'].get('_id')}")
+                            print(f"   'user_id' field: {st.session_state['user_for_call'].get('user_id')}")
                             st.success(f"Preparing call for {user_info['name']}...")
                             st.switch_page("pages/3_Call_Console.py")
 

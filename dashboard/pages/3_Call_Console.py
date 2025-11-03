@@ -8,6 +8,8 @@ import asyncio
 import re
 import traceback
 import time
+from datetime import datetime
+from dateutil import parser
 
 # --- 1. HIDE THE DEFAULT NAVIGATION SIDEBAR ---
 st.markdown(
@@ -498,6 +500,19 @@ with col_controls:
 
         if st.button("☎️ End Call", use_container_width=True):
             print("Frontend: End Call button clicked.")
+            with st.spinner("Ending call and signaling agent..."):
+                try:
+                    stop_payload = {"room_name": st.session_state.call_room_name}
+                    response = requests.post(f"{backend_url}/calls/stop", json=stop_payload)
+
+                    if response.status_code == 200:
+                        st.toast("Agent signaled to end call.")
+                    else:
+                        st.warning(f"Could not signal agent, but ending call anyway: {response.text}")
+
+                except Exception as e:
+                    st.warning(f"Error signaling agent: {e}")
+
             st.session_state.call_status = "Ended"
             st.rerun()
     # --- END OF MODIFIED SECTION ---
@@ -511,90 +526,246 @@ with col_controls:
         duration = now_utc - start_time_utc
         st.write(f"**Duration:** {str(duration).split('.')[0]}")
 
-# --- SUMMARY SECTION (UNCHANGED) ---
+# --- SUMMARY SECTION ---
 if st.session_state.call_status == "Ended":
-    st.session_state.livekit_token = None  # Clear token
-    st.session_state.livekit_url = None  # Clear URL
+    st.session_state.livekit_token = None
+    st.session_state.livekit_url = None
 
     with st.container(border=True):
         st.subheader("Retrieving Call Summary...")
         summary_placeholder = st.empty()
 
-        with st.spinner("Waiting for agent to save summary... This can take up to 10 seconds."):
+        with st.spinner("Waiting for agent to save summary..."):
             try:
-                latest_call = None
-                room_name = st.session_state.call_room_name
-                user_id_to_find = user_info.get('id')
+                user_id_to_find = user_info.get('id') or user_info.get('_id') or user_info.get('user_id')
 
-                # Poll backend for summary
-                for attempt in range(5):
-                    print(f"Frontend: Attempt {attempt + 1}/5 to fetch summary for user {user_id_to_find}")
+                # ✅ FIX: Store call end time to filter summaries
+                call_end_time = datetime.now(UTC).isoformat()
+
+                print("=" * 80)
+                print("🔍 FRONTEND DEBUG INFO:")
+                print(f"   user_id: {user_id_to_find}")
+                print(f"   call_end_time: {call_end_time}")
+                print(f"   room_name: {st.session_state.call_room_name}")
+                print("=" * 80)
+
+                st.info(f"🔍 Looking for NEW summary for user: `{user_id_to_find}`")
+
+                latest_call = None
+
+                # ✅ FIX: Increase polling to 20 attempts (80 seconds total)
+                for attempt in range(20):
+                    print(f"📡 Polling attempt {attempt + 1}/20")
+
+                    # Show progress to user
+                    progress_msg = f"⏳ Waiting for AI to finish analyzing conversation... ({attempt + 1}/20)"
+                    summary_placeholder.info(progress_msg)
+
                     response = requests.get(f"{backend_url}/calls/")
+
                     if response.status_code == 200:
                         all_calls = response.json()
-                        # Filter calls for the specific user and sort by end_time (most recent first)
-                        user_calls = sorted(
-                            [c for c in all_calls if c.get('user_id') == user_id_to_find],
-                            key=lambda x: x.get('end_time', '1970-01-01T00:00:00Z'),
-                            reverse=True
-                        )
+                        print(f"📊 Got {len(all_calls)} total calls")
 
-                        if user_calls and user_calls[0].get("summary"):
-                            latest_call = user_calls[0]
-                            print(f"Frontend: Found summary in call log {latest_call.get('id')}")
-                            break
+                        # ✅ FIX: Filter for this user AND calls created AFTER this call started
+                        user_calls = [
+                            c for c in all_calls
+                            if c.get('user_id') == user_id_to_find
+                               and c.get('end_time', '') >= call_end_time  # NEW: Only recent calls
+                        ]
+
+                        print(f"🎯 Found {len(user_calls)} NEW calls for user_id={user_id_to_find}")
+
+                        if user_calls:
+                            # Sort by end_time to get most recent
+                            user_calls_sorted = sorted(
+                                user_calls,
+                                key=lambda x: x.get('end_time', ''),
+                                reverse=True
+                            )
+
+                            latest = user_calls_sorted[0]
+                            print(f"📞 Latest NEW call: {latest.get('id')}")
+                            print(f"   Has summary: {bool(latest.get('summary'))}")
+
+                            if latest.get("summary"):
+                                latest_call = latest
+                                print("✅ Summary found!")
+                                break
+                            else:
+                                print("⏳ Summary not ready yet...")
                         else:
-                            print(
-                                f"Frontend: No summary found yet for user {user_id_to_find}. Most recent call (if any): {user_calls[0].get('id') if user_calls else 'None'}")
+                            print(f"⏳ No NEW calls found yet for user_id={user_id_to_find}")
                     else:
-                        print(f"Frontend: Failed to fetch calls from backend (Status: {response.status_code})")
+                        print(f"⚠️ Backend returned status {response.status_code}")
 
-                    if attempt < 4:
-                        time.sleep(2)  # Wait before retrying
+                    if attempt < 19:
+                        time.sleep(4)  # 4 seconds between polls
 
                 if latest_call:
                     summary_placeholder.empty()
-                    st.session_state.ai_analysis = parse_summary_report(latest_call['summary'])
+
+                    st.session_state.ai_analysis = {
+                        "call_id": latest_call.get('id'),
+                        "summary": latest_call.get('summary', 'N/A'),
+                        "mood": latest_call.get('mood', 'neutral').capitalize(),
+                        "topics": latest_call.get('topics', [])
+                    }
+
                     st.session_state.call_status = "Summary_Retrieved"
                     st.session_state.call_room_name = None
-                    print("Frontend: Summary retrieved, rerunning.")
                     st.rerun()
                 else:
-                    print(f"Frontend: Could not find summary after polling for user {user_id_to_find}.")
+                    print(f"❌ TIMEOUT: Could not find summary after 20 attempts (80 seconds)")
                     summary_placeholder.error(
-                        "Could not find the summary for this call. The agent might have failed or the call was too short.")
+                        f"⏱️ Summary is taking longer than expected. "
+                        f"Please check Analytics page in 1-2 minutes to view the summary."
+                    )
 
-            except requests.exceptions.ConnectionError:
-                summary_placeholder.error(
-                    f"Connection Error fetching summary: Could not connect to backend at {backend_url}.")
+                    # Allow user to continue anyway
+                    if st.button("Continue to Analytics", key="timeout_continue"):
+                        st.session_state.call_status = "Not Connected"
+                        st.switch_page("pages/4_Analytics.py")
+
             except Exception as e:
-                summary_placeholder.error(f"An error occurred fetching summary: {e}")
+                summary_placeholder.error(f"Error: {e}")
                 traceback.print_exc()
 
 if st.session_state.call_status == "Summary_Retrieved":
-    # --- Form for Reviewing Summary (UNCHANGED) ---
     with st.container(border=True):
         with st.form("summary_form"):
             st.subheader("Review Call Summary")
             analysis = st.session_state.ai_analysis
 
-            summary_text = st.text_area("Summary", value=analysis.get("summary", "N/A"), height=150)
-            mood_options = ["Positive", "Neutral", "Negative"]
-            detected_mood = analysis.get("mood", "Neutral").capitalize()
-            try:
-                mood_index = [m.lower() for m in mood_options].index(detected_mood.lower())
-            except ValueError:
-                mood_index = 1
-            overall_mood = st.selectbox("Overall Mood", mood_options, index=mood_index)
-            topics_text = ", ".join(analysis.get("topics", []))
-            topics_discussed = st.text_input("Topics Discussed", value=topics_text)
+            summary_text = st.text_area(
+                "Summary",
+                value=analysis.get("summary", "N/A"),
+                height=150
+            )
+
+            detected_mood = analysis.get("mood", "neutral").lower()
+            mood_display = {
+                'happy': '😊 Happy',
+                'sad': '😔 Sad',
+                'neutral': '😐 Neutral'
+            }.get(detected_mood, '😐 Neutral')
+
+            st.text_input(
+                "Overall Mood (AI Detected)",
+                value=mood_display,
+                disabled=True
+            )
+
+            topics_list = analysis.get("topics", [])
+            topics_text = ", ".join(topics_list) if topics_list else ""
+            topics_discussed = st.text_input(
+                "Topics Discussed",
+                value=topics_text
+            )
 
             if st.form_submit_button("Save & Go to Analytics", use_container_width=True):
                 print("Frontend: Save & Go button clicked.")
+
+                # ✅ ENHANCED: Save to memory with follow-up tracking
+                try:
+                    # Parse edited topics
+                    final_topics = [t.strip() for t in topics_discussed.split(",") if t.strip()]
+
+                    # Get call details
+                    user_info = st.session_state.get('user_for_call')
+                    call_id = analysis.get("call_id")
+
+                    # ✅ NEW: Get discussed vs new follow-ups from the call
+                    # For now, we'll extract from the latest call log
+                    response = requests.get(f"{backend_url}/calls/")
+                    all_calls = response.json()
+
+                    # Find this specific call
+                    this_call = next((c for c in all_calls if c.get('id') == call_id), None)
+
+                    new_followups = []
+                    if this_call and this_call.get('new_followups'):
+                        new_followups = this_call['new_followups']
+
+                    memory_payload = {
+                        "user_id": user_info.get("id"),
+                        "user_name": user_info.get("name"),
+                        "call_id": call_id,
+                        "summary": summary_text,
+                        "mood": detected_mood,
+                        "topics": final_topics,
+                        "date": datetime.now(UTC).isoformat(),
+                        # ✅ NEW FIELDS for smart follow-ups
+                        "discussed_topics": [],  # Topics from memory that were addressed
+                        "new_followups": new_followups  # New things mentioned this call
+                    }
+
+                    # ✅ SMART LOGIC: Check if this call addressed any pending follow-ups
+                    # Get user's memory to see what was pending
+                    try:
+                        memory_response = requests.get(
+                            f"{backend_url}/memory/{user_info.get('id')}",
+                            timeout=5
+                        )
+                        if memory_response.status_code == 200:
+                            user_memory = memory_response.json()
+                            old_pending = user_memory.get("pending_followups", [])
+
+                            # Check which pending topics were mentioned in this call's summary
+                            discussed = []
+                            for pending_topic in old_pending:
+                                # Simple keyword matching - check if topic was mentioned
+                                if any(keyword.lower() in summary_text.lower()
+                                       for keyword in pending_topic.split()[:3]):  # Check first 3 words
+                                    discussed.append(pending_topic)
+
+                            memory_payload["discussed_topics"] = discussed
+
+                            if discussed:
+                                st.success(f"✅ Addressed {len(discussed)} pending topic(s) from last time!")
+                                for topic in discussed:
+                                    st.caption(f"  • {topic}")
+
+                    except Exception as mem_err:
+                        print(f"⚠️ Could not check previous memory: {mem_err}")
+
+                    response = requests.post(
+                        f"{backend_url}/memory/update",
+                        json=memory_payload,
+                        timeout=5
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        st.toast("✅ Memory updated!", icon="🧠")
+                        print("✅ Memory saved to database")
+
+                        # ✅ SHOW WHAT'S PENDING FOR NEXT CALL
+                        pending_for_next = result.get("pending_followups", [])
+                        if pending_for_next:
+                            st.info(f"📌 {len(pending_for_next)} topic(s) to follow up on next time:")
+                            for topic in pending_for_next[:3]:  # Show first 3
+                                st.caption(f"  • {topic}")
+                        else:
+                            st.success("✅ All topics addressed - next call starts fresh!")
+                    else:
+                        st.warning("Could not update memory, but continuing...")
+                        print(f"⚠️ Memory update failed: {response.text}")
+
+                except Exception as e:
+                    st.warning(f"Error updating memory: {e}")
+                    print(f"❌ Memory update error: {e}")
+
                 st.toast("Call log reviewed.", icon="✅")
-                keys_to_clear = ["call_status", "start_time", "ai_analysis", "user_for_call", "call_room_name",
-                                 "livekit_token", "livekit_url"]
+
+                # Clear session state
+                keys_to_clear = [
+                    "call_status", "start_time", "ai_analysis",
+                    "user_for_call", "call_room_name",
+                    "livekit_token", "livekit_url"
+                ]
                 for key in keys_to_clear:
                     if key in st.session_state:
                         del st.session_state[key]
+
                 st.switch_page("pages/4_Analytics.py")
