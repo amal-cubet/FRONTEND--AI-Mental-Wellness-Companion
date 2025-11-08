@@ -319,9 +319,9 @@ if st.session_state.get('show_transcript', False):
 
         st.markdown("### 💬 Conversation")
 
-        # Chat transcript with modern styling
+        # ✅ FIXED: Handle both formats (old string format and new dict format)
         if call.get('transcript'):
-            transcript_lines = call['transcript']
+            transcript_data = call['transcript']
 
             st.markdown("""
             <style>
@@ -395,48 +395,71 @@ if st.session_state.get('show_transcript', False):
             </style>
             """, unsafe_allow_html=True)
 
-            # Build chat HTML
+            # ✅ Build chat HTML with format detection
             chat_html = '<div class="chat-window">'
 
-            for i, line in enumerate(transcript_lines):
-                if line.startswith("User:"):
-                    text = line.replace("User:", "").strip()
+            for i, entry in enumerate(transcript_data):
+                # ✅ Handle new dict format: {"speaker": "user", "text": "..."}
+                if isinstance(entry, dict):
+                    speaker = entry.get('speaker', 'unknown')
+                    text = entry.get('text', '')
+
                     # Escape HTML to prevent injection
                     text = text.replace('<', '&lt;').replace('>', '&gt;')
-                    chat_html += f'''<div style="display: flex; justify-content: flex-end;">
-                        <div class="message-bubble user-bubble">
-                            <div class="message-sender">👤 {call['user_name']}</div>
-                            <div class="message-text">{text}</div>
-                        </div>
-                    </div>'''
-                elif line.startswith("AI:") or line.startswith("Assistant:"):
-                    text = line.replace("AI:", "").replace("Assistant:", "").strip()
-                    # Escape HTML to prevent injection
-                    text = text.replace('<', '&lt;').replace('>', '&gt;')
-                    chat_html += f'''<div style="display: flex; justify-content: flex-start;">
-                        <div class="message-bubble ai-bubble">
-                            <div class="message-sender">🤖 AI Companion</div>
-                            <div class="message-text">{text}</div>
-                        </div>
-                    </div>'''
+
+                    if speaker.lower() == 'user':
+                        chat_html += f'''<div style="display: flex; justify-content: flex-end;">
+                            <div class="message-bubble user-bubble">
+                                <div class="message-sender">👤 {call['user_name']}</div>
+                                <div class="message-text">{text}</div>
+                            </div>
+                        </div>'''
+                    else:  # AI
+                        chat_html += f'''<div style="display: flex; justify-content: flex-start;">
+                            <div class="message-bubble ai-bubble">
+                                <div class="message-sender">🤖 AI Companion</div>
+                                <div class="message-text">{text}</div>
+                            </div>
+                        </div>'''
+
+                # ✅ Handle legacy string format: "User: text" or "AI: text"
+                elif isinstance(entry, str):
+                    if entry.startswith("User:"):
+                        text = entry.replace("User:", "").strip()
+                        text = text.replace('<', '&lt;').replace('>', '&gt;')
+                        chat_html += f'''<div style="display: flex; justify-content: flex-end;">
+                            <div class="message-bubble user-bubble">
+                                <div class="message-sender">👤 {call['user_name']}</div>
+                                <div class="message-text">{text}</div>
+                            </div>
+                        </div>'''
+                    elif entry.startswith("AI:") or entry.startswith("Assistant:"):
+                        text = entry.replace("AI:", "").replace("Assistant:", "").strip()
+                        text = text.replace('<', '&lt;').replace('>', '&gt;')
+                        chat_html += f'''<div style="display: flex; justify-content: flex-start;">
+                            <div class="message-bubble ai-bubble">
+                                <div class="message-sender">🤖 AI Companion</div>
+                                <div class="message-text">{text}</div>
+                            </div>
+                        </div>'''
 
             chat_html += '</div>'
 
             st.markdown(chat_html, unsafe_allow_html=True)
         else:
-            st.warning("📭 No transcript available for this call")
+            st.warning("🔭 No transcript available for this call")
 
         st.markdown("---")
 
-        # Bottom actions
-        col_action1, col_action2, col_action3 = st.columns([1, 1, 1])
-        with col_action2:
-            if st.button("Close Transcript", key="close_bottom", use_container_width=True, type="primary"):
-                st.session_state.show_transcript = False
-                st.rerun()
+        # # Bottom actions
+        # col_action1, col_action2, col_action3 = st.columns([1, 1, 1])
+        # with col_action2:
+        #     if st.button("Close Transcript", key="close_bottom", use_container_width=True, type="primary"):
+        #         st.session_state.show_transcript = False
+        #         st.rerun()
 
 # --- REFRESH BUTTON ---
-st.markdown("---")
+
 col1, col2, col3 = st.columns([1, 1, 1])
 with col2:
     if st.button("🔄 Refresh Data", use_container_width=True):
