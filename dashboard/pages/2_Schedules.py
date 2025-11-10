@@ -1,7 +1,38 @@
+import os, sys
+
+from utils.auth_cookie import is_authenticated, inject_back_button_limiter, clear_auth, inject_navigation_blocker
+
+import time
 import streamlit as st
 import requests
 import pandas as pd
 from datetime import time as dt_time
+
+# --- CRITICAL FIX: Add initialization flag to prevent premature checks ---
+if 'auth_initialized' not in st.session_state:
+    st.session_state.auth_initialized = False
+
+# --- Show loading screen during first load ---
+if not st.session_state.auth_initialized:
+    with st.spinner("Loading..."):
+        time.sleep(0.3)  # Give time for session restoration
+        st.session_state.auth_initialized = True
+        st.rerun()
+
+# --- NOW check authentication (after initialization) ---
+inject_back_button_limiter()
+
+if not is_authenticated():
+    st.warning("⚠️ You are not logged in. Redirecting to login page...")
+    time.sleep(0.5)
+    st.switch_page("login.py")
+    st.stop()
+
+st.set_page_config(
+    page_title="Schedules",
+    page_icon="🗓️",
+    layout="wide"
+)
 
 # --- 1. HIDE THE DEFAULT NAVIGATION SIDEBAR ---
 st.markdown(
@@ -27,10 +58,56 @@ def custom_sidebar():
         st.page_link("pages/5_Settings.py", label="Settings", icon="⚙️")
         st.page_link("pages/6_Tech_Stack.py", label="Tech Stack", icon="💻")
         st.markdown("---")
-        if st.button("Logout", key="logout_button"):
-            for key in st.session_state.keys():
-                del st.session_state[key]
-            st.switch_page("login.py")
+
+        # Show session info
+        if st.session_state.get('login_time'):
+            from datetime import datetime
+            try:
+                login_time = datetime.fromisoformat(st.session_state.login_time)
+                st.caption(f"🕐 Logged in: {login_time.strftime('%I:%M %p')}")
+            except:
+                pass
+
+        # Initialize logout confirmation state
+        if 'show_logout_confirmation' not in st.session_state:
+            st.session_state.show_logout_confirmation = False
+
+        # Logout button - triggers confirmation dialog
+        if st.button("🚪 Logout", key="logout_button", use_container_width=True, type="primary"):
+            st.session_state.show_logout_confirmation = True
+            st.rerun()
+
+    # Logout Confirmation Dialog (outside sidebar)
+    if st.session_state.get('show_logout_confirmation', False):
+        @st.dialog("Confirm Logout")
+        def logout_confirmation_dialog():
+            st.warning("⚠️ Are you sure you want to logout?")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("✅ Yes, Logout", type="primary", use_container_width=True):
+                    # Clear authentication
+                    clear_auth()
+
+                    # Clear all session state except auth flags
+                    keys_to_preserve = ['authenticated', 'logout_triggered']
+                    for key in list(st.session_state.keys()):
+                        if key not in keys_to_preserve:
+                            del st.session_state[key]
+
+                    st.success("✅ Logged out successfully!")
+                    inject_navigation_blocker()
+
+                    time.sleep(0.5)
+                    st.switch_page("login.py")
+
+            with col2:
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state.show_logout_confirmation = False
+                    st.rerun()
+
+        logout_confirmation_dialog()
 
 
 custom_sidebar()

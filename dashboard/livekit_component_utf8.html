@@ -239,6 +239,8 @@ function initializeLiveKit() {
         });
         mediaRecorder.start(250);
       };
+
+      // ✅ UPDATED DEEPGRAM ONMESSAGE HANDLER
       dgWs.onmessage = (message) => {
         try {
           const data = JSON.parse(message.data);
@@ -248,42 +250,42 @@ function initializeLiveKit() {
           const isFinal = data.is_final || false;
           if (!transcript) return;
           console.log(`🗣️ ${isFinal ? 'FINAL' : 'interim'}:`, transcript);
+
           if (!isFinal) {
             updateLiveTranscript("user", transcript);
           } else {
             removeLiveTranscript("user");
             console.log("📝 Creating single user bubble for:", transcript);
+
+            // ✅ For speech, use faster streaming or instant display
             const userBubble = createNewStreamingElement("user");
-            const words = transcript.split(/(\s+)/);
-            let wordIndex = 0;
-            const streamInterval = setInterval(() => {
-              if (wordIndex < words.length) {
-                const word = words[wordIndex];
-                if (word.trim()) {
-                  updateStreamingText("user", word + " ");
-                }
-                wordIndex++;
-              } else {
-                clearInterval(streamInterval);
-                finalizeStreamingTranscript("user");
-                if (globalRoom && globalRoom.localParticipant) {
-                  const payload = JSON.stringify({
-                    type: "user_text_message",
-                    text: transcript
-                  });
-                  globalRoom.localParticipant.publishData(
-                    new TextEncoder().encode(payload),
-                    { reliable: true }
-                  );
-                  console.log("📤 Sent to backend:", transcript.substring(0, 50) + "...");
-                }
+            userBubble.dataset.locked = "true"; // Lock to prevent interruption
+            const textContainer = userBubble.querySelector(".streaming-text");
+
+            if (textContainer) {
+              textContainer.textContent = transcript;
+              delete userBubble.dataset.locked;
+              finalizeStreamingTranscript("user");
+
+              // Send to backend
+              if (globalRoom && globalRoom.localParticipant) {
+                const payload = JSON.stringify({
+                  type: "user_text_message",
+                  text: transcript
+                });
+                globalRoom.localParticipant.publishData(
+                  new TextEncoder().encode(payload),
+                  { reliable: true }
+                );
+                console.log("📤 Sent to backend:", transcript.substring(0, 50) + "...");
               }
-            }, 60);
+            }
           }
         } catch (err) {
           console.warn("DG message parse error:", err);
         }
       };
+
       dgWs.onerror = (e) => {
         console.error("Deepgram WS error:", e);
         updateStatus("STT WebSocket error", "error");
@@ -305,6 +307,7 @@ function initializeLiveKit() {
       updateStatus("Connected (STT Off)", "connected");
     }
 
+    // ✅ UPDATED SENDTEXTMESSAGETOLIVEKIT FUNCTION
     function sendTextMessageToLiveKit(messageText) {
       console.log(`[LiveKit Component] 📩 Received message from parent: ${messageText}`);
 
@@ -321,24 +324,21 @@ function initializeLiveKit() {
           console.log("📤 [LiveKit Component] Sent text to backend:", messageText.substring(0, 50) + "...");
 
           removeLiveTranscript("user");
-          console.log("📝 Creating single user bubble for:", messageText);
+
+          // ✅ FIX: Display text messages instantly (no streaming animation)
           const userBubble = createNewStreamingElement("user");
+          const textContainer = userBubble.querySelector(".streaming-text");
 
-          const words = messageText.split(/(\s+)/);
-          let wordIndex = 0;
+          if (textContainer) {
+            // Add entire message at once
+            textContainer.textContent = messageText;
 
-          const streamInterval = setInterval(() => {
-            if (wordIndex < words.length) {
-              const word = words[wordIndex];
-              if (word.trim()) {
-                updateStreamingText("user", word + " ");
-              }
-              wordIndex++;
-            } else {
-              clearInterval(streamInterval);
-              finalizeStreamingTranscript("user");
-            }
-          }, 60);
+            // Immediately finalize
+            finalizeStreamingTranscript("user");
+
+            // Scroll to bottom
+            transcriptContent.scrollTop = transcriptContent.scrollHeight;
+          }
 
           return true;
 

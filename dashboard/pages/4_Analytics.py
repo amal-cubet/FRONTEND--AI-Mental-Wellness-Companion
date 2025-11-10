@@ -1,9 +1,46 @@
+import os, sys
+
+# --- Ensure root directory is in sys.path ---
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from utils.auth_cookie import is_authenticated, inject_back_button_limiter, clear_auth, inject_navigation_blocker
+import time
+
 import streamlit as st
 import pandas as pd
 import altair as alt
 import requests
 from datetime import datetime, timedelta
 from collections import Counter
+
+# --- CRITICAL FIX: Add initialization flag to prevent premature checks ---
+if 'auth_initialized' not in st.session_state:
+    st.session_state.auth_initialized = False
+
+# --- Show loading screen during first load ---
+if not st.session_state.auth_initialized:
+    with st.spinner("Loading..."):
+        time.sleep(0.3)  # Give time for session restoration
+        st.session_state.auth_initialized = True
+        st.rerun()
+
+# --- NOW check authentication (after initialization) ---
+inject_back_button_limiter()
+
+if not is_authenticated():
+    st.warning("⚠️ You are not logged in. Redirecting to login page...")
+    time.sleep(0.5)
+    st.switch_page("login.py")
+    st.stop()
+
+# --- Streamlit Page Config ---
+st.set_page_config(
+    page_title="Analytics",
+    page_icon="📊",
+    layout="wide"
+)
 
 # --- HIDE DEFAULT NAVIGATION ---
 st.markdown(
@@ -29,10 +66,56 @@ def custom_sidebar():
         st.page_link("pages/5_Settings.py", label="Settings", icon="⚙️")
         st.page_link("pages/6_Tech_Stack.py", label="Tech Stack", icon="💻")
         st.markdown("---")
-        if st.button("Logout", key="logout_button"):
-            for key in st.session_state.keys():
-                del st.session_state[key]
-            st.switch_page("login.py")
+
+        # Show session info
+        if st.session_state.get('login_time'):
+            from datetime import datetime
+            try:
+                login_time = datetime.fromisoformat(st.session_state.login_time)
+                st.caption(f"🕐 Logged in: {login_time.strftime('%I:%M %p')}")
+            except:
+                pass
+
+        # Initialize logout confirmation state
+        if 'show_logout_confirmation' not in st.session_state:
+            st.session_state.show_logout_confirmation = False
+
+        # Logout button - triggers confirmation dialog
+        if st.button("🚪 Logout", key="logout_button", use_container_width=True, type="primary"):
+            st.session_state.show_logout_confirmation = True
+            st.rerun()
+
+    # Logout Confirmation Dialog (outside sidebar)
+    if st.session_state.get('show_logout_confirmation', False):
+        @st.dialog("Confirm Logout")
+        def logout_confirmation_dialog():
+            st.warning("⚠️ Are you sure you want to logout?")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("✅ Yes, Logout", type="primary", use_container_width=True):
+                    # Clear authentication
+                    clear_auth()
+
+                    # Clear all session state except auth flags
+                    keys_to_preserve = ['authenticated', 'logout_triggered']
+                    for key in list(st.session_state.keys()):
+                        if key not in keys_to_preserve:
+                            del st.session_state[key]
+
+                    st.success("✅ Logged out successfully!")
+                    inject_navigation_blocker()
+
+                    time.sleep(0.5)
+                    st.switch_page("login.py")
+
+            with col2:
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state.show_logout_confirmation = False
+                    st.rerun()
+
+        logout_confirmation_dialog()
 
 
 custom_sidebar()
@@ -150,26 +233,26 @@ with col_main:
         'neutral': '😐 Neutral'
     })
 
-    # Create table with Action column
+    # ✅ FIX: Always show Action column (don't hide it when transcript is open)
     table_df = display_df[[
         'id', 'user_name', 'date_display', 'duration_display',
         'mood_display', 'summary_preview'
     ]].copy()
 
-    # Add Action column - reset to empty if transcript is showing
-    if st.session_state.get('show_transcript', False):
-        table_df['Action'] = ""
-    else:
-        table_df['Action'] = ""
-
+    # ✅ Always initialize Action column to empty
+    table_df['Action'] = ""
     table_df.columns = ['id', 'User', 'Date', 'Duration', 'Mood', 'Summary', 'Action']
+
+    # ✅ Generate unique key based on whether transcript is showing
+    # This forces the table to reset when transcript state changes
+    table_key = f"calls_table_{st.session_state.get('show_transcript', False)}_{st.session_state.get('selected_call_id', 'none')}"
 
     # Display as interactive table with action column
     event = st.data_editor(
         table_df,
         hide_index=True,
         use_container_width=True,
-        key="calls_table",
+        key=table_key,  # ✅ Dynamic key
         column_config={
             "id": None,
             "Action": st.column_config.SelectboxColumn(
@@ -186,23 +269,25 @@ with col_main:
         disabled=["User", "Date", "Duration", "Mood", "Summary"]
     )
 
-    # Handle action selection
-    if event is not None and not st.session_state.get('show_transcript', False):
-        # Check for changes in the Action column
+    # ✅ FIX: Handle action selection (works even when transcript is already open)
+    if event is not None:
         for idx, row in event.iterrows():
             if row['Action'] == "📄 View Transcript":
                 selected_call_id = row['id']
-                print(f"\n{'=' * 80}")
-                print(f"🎯 TRANSCRIPT VIEW REQUESTED")
-                print(f"   Selected call_id: {selected_call_id}")
-                print(f"   Row index: {idx}")
-                print(f"   Available columns: {list(row.index)}")
-                print(f"{'=' * 80}\n")
 
-                st.session_state.selected_call_id = selected_call_id
-                st.session_state.show_transcript = True
-                st.rerun()
-                break
+                # ✅ Check if this is a NEW selection (different from current)
+                current_call_id = st.session_state.get('selected_call_id')
+                if selected_call_id != current_call_id:
+                    print(f"\n{'=' * 80}")
+                    print(f"🎯 NEW TRANSCRIPT VIEW REQUESTED")
+                    print(f"   Previous call_id: {current_call_id}")
+                    print(f"   New call_id: {selected_call_id}")
+                    print(f"{'=' * 80}\n")
+
+                    st.session_state.selected_call_id = selected_call_id
+                    st.session_state.show_transcript = True
+                    st.rerun()
+                    break
 
 with col_topics:
     st.subheader("☁️ Top Topics")
@@ -278,7 +363,6 @@ if st.session_state.get('show_transcript', False):
     call_id = st.session_state.selected_call_id
     call = df[df['id'] == call_id].iloc[0]
 
-    # st.markdown("---")
     st.markdown("---")
 
     # Create full-width modal container
@@ -289,8 +373,10 @@ if st.session_state.get('show_transcript', False):
             st.markdown(f"### 💬 {call['user_name']}'s Conversation")
             st.caption(f"📅 {pd.to_datetime(call['end_time']).strftime('%B %d, %Y at %H:%M')}")
         with col_close:
+            # ✅ FIX: Clear both flags when closing
             if st.button("✕ Close", key="close_transcript_top", use_container_width=True, type="secondary"):
                 st.session_state.show_transcript = False
+                st.session_state.selected_call_id = None  # ✅ Clear the selected call ID
                 st.rerun()
 
         st.markdown("---")
@@ -305,21 +391,9 @@ if st.session_state.get('show_transcript', False):
         with col3:
             st.metric("💬 Messages", len(call.get('transcript', [])))
 
-        # Topics badges
-        # if call['topics']:
-        #     st.markdown("**🏷️ Topics:**")
-        #     topics_html = " ".join([
-        #         f"<span style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); "
-        #         f"color: white; padding: 6px 14px; border-radius: 20px; margin: 4px; "
-        #         f"display: inline-block; font-size: 13px; font-weight: 500; "
-        #         f"box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);'>{topic}</span>"
-        #         for topic in call['topics']
-        #     ])
-        #     st.markdown(topics_html, unsafe_allow_html=True)
-
         st.markdown("### 💬 Conversation")
 
-        # ✅ FIXED: Handle both formats (old string format and new dict format)
+        # Handle both formats (old string format and new dict format)
         if call.get('transcript'):
             transcript_data = call['transcript']
 
@@ -395,11 +469,11 @@ if st.session_state.get('show_transcript', False):
             </style>
             """, unsafe_allow_html=True)
 
-            # ✅ Build chat HTML with format detection
+            # Build chat HTML with format detection
             chat_html = '<div class="chat-window">'
 
             for i, entry in enumerate(transcript_data):
-                # ✅ Handle new dict format: {"speaker": "user", "text": "..."}
+                # Handle new dict format: {"speaker": "user", "text": "..."}
                 if isinstance(entry, dict):
                     speaker = entry.get('speaker', 'unknown')
                     text = entry.get('text', '')
@@ -422,7 +496,7 @@ if st.session_state.get('show_transcript', False):
                             </div>
                         </div>'''
 
-                # ✅ Handle legacy string format: "User: text" or "AI: text"
+                # Handle legacy string format: "User: text" or "AI: text"
                 elif isinstance(entry, str):
                     if entry.startswith("User:"):
                         text = entry.replace("User:", "").strip()
@@ -451,17 +525,12 @@ if st.session_state.get('show_transcript', False):
 
         st.markdown("---")
 
-        # # Bottom actions
-        # col_action1, col_action2, col_action3 = st.columns([1, 1, 1])
-        # with col_action2:
-        #     if st.button("Close Transcript", key="close_bottom", use_container_width=True, type="primary"):
-        #         st.session_state.show_transcript = False
-        #         st.rerun()
-
-# --- REFRESH BUTTON ---
-
+# ✅ FIX: Refresh button now properly clears transcript state
 col1, col2, col3 = st.columns([1, 1, 1])
 with col2:
     if st.button("🔄 Refresh Data", use_container_width=True):
+        # Clear transcript state before refreshing
+        st.session_state.show_transcript = False
+        st.session_state.selected_call_id = None
         st.cache_data.clear()
         st.rerun()
